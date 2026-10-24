@@ -8616,10 +8616,23 @@ void ImGui::EndPopupContextWidget()
     g.LastItemData = g.WidgetValueContextPopupLastItemData;
 }
 
+// RigKit branch only (not part of the upstream widget value callback proposal):
+// present the context popup for the previously submitted widget at item boundaries, so a
+// right-click on any value widget reaches the callback without the application asking for it.
+// Upstream-style use stays explicit: application code calls BeginPopupContextWidget() itself.
+static void SubmitWidgetValueContextPopup()
+{
+    bool open = false;
+    if (ImGui::BeginPopupContextWidget(&open) && open)
+        ImGui::EndPopupContextWidget();
+}
+
 void ImGui::End()
 {
     ImGuiContext& g = *GImGui;
     ImGuiWindow* window = g.CurrentWindow;
+    SubmitWidgetValueContextPopup();
+
     // Error checking: verify that user hasn't called End() too many times!
     if (g.CurrentWindowStack.Size <= 1 && g.WithinFrameScopeWithImplicitWindow)
     {
@@ -9709,6 +9722,7 @@ ImGuiID ImGui::GetIDWithSeed(int n, ImGuiID seed)
 
 void ImGui::PopID()
 {
+    SubmitWidgetValueContextPopup();
     ImGuiWindow* window = GImGui->CurrentWindow;
     if (window->IDStack.Size <= 1)
     {
@@ -11702,6 +11716,8 @@ bool ImGui::ItemAdd(const ImRect& bb, ImGuiID id, const ImRect* nav_bb_arg, ImGu
 {
     ImGuiContext& g = *GImGui;
     ImGuiWindow* window = g.CurrentWindow;
+    SubmitWidgetValueContextPopup();
+
     // Set item data
     // (DisplayRect is left untouched, made valid when ImGuiItemStatusFlags_HasDisplayRect is set)
     g.LastItemData.ID = id;

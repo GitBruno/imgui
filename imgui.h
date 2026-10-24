@@ -2738,7 +2738,7 @@ enum ImGuiWidgetValueCallbackPhase
 {
     ImGuiWidgetValueCallbackPhase_BeforeSubmit,     // Called before the widget reads its value. Write through Value and return true if you modified it: the widget will report itself as edited.
     ImGuiWidgetValueCallbackPhase_AfterSubmit,      // Called after the widget has been submitted and its final value is known. Return value is ignored.
-    ImGuiWidgetValueCallbackPhase_ContextMenuQuery, // Called by BeginPopupContextWidget() for the last submitted widget. Only ID is set. Return true to claim the context menu for this widget.
+    ImGuiWidgetValueCallbackPhase_ContextMenuQuery, // Called by BeginPopupContextWidget() for the last submitted widget, and by the RigKit branch once per context-menu presentation for that widget. Only ID is set. Return true to claim the context menu for this widget.
     ImGuiWidgetValueCallbackPhase_ContextMenuDraw,  // Called inside the open context menu claimed above. Draw your menu items here. Return value is ignored.
 };
 
