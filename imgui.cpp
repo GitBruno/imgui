@@ -4091,6 +4091,11 @@ ImGuiContext::ImGuiContext(ImFontAtlas* shared_font_atlas)
     GcCompactAll = false;
     TestEngineHookItems = false;
     TestEngine = NULL;
+    WidgetValueCallback = NULL;
+    WidgetValueCallbackUserData = NULL;
+    WidgetValueContextPopupOpen = false;
+    WidgetValueContextPopupFrame = -1;
+    WidgetValueContextPopupItemId = 0;
     memset(ContextName, 0, sizeof(ContextName));
 
     InputEventsNextMouseSource = ImGuiMouseSource_Mouse;
@@ -8534,11 +8539,87 @@ bool ImGui::Begin(const char* name, bool* p_open, ImGuiWindowFlags flags)
     return !window->SkipItems;
 }
 
+// Widget value callback and context popup (see SetWidgetValueCallback() and ImGuiWidgetValueCallbackData in imgui.h)
+
+void ImGui::SetWidgetValueCallback(ImGuiWidgetValueCallback callback, void* user_data)
+{
+    ImGuiContext& g = *GImGui;
+    g.WidgetValueCallback = callback;
+    g.WidgetValueCallbackUserData = user_data;
+}
+
+ImGuiWidgetValueCallback ImGui::GetWidgetValueCallback()
+{
+    return GImGui->WidgetValueCallback;
+}
+
+void* ImGui::GetWidgetValueCallbackUserData()
+{
+    return GImGui->WidgetValueCallbackUserData;
+}
+
+bool ImGui::BeginPopupContextWidget(bool* p_open)
+{
+    if (p_open)
+        *p_open = false;
+    ImGuiContext& g = *GImGui;
+    if (g.WidgetValueContextPopupOpen || g.WidgetValueCallback == NULL)
+        return false;
+    ImGuiWindow* window = g.CurrentWindow;
+    if (window == NULL || window->SkipItems)
+        return false;
+    const ImGuiID item_id = g.LastItemData.ID;
+    if (item_id == 0)
+        return false;
+    if (g.WidgetValueContextPopupFrame == g.FrameCount && g.WidgetValueContextPopupItemId == item_id)
+        return false;
+
+    ImGuiWidgetValueCallbackData data;
+    memset(&data, 0, sizeof(data));
+    data.Ctx = &g;
+    data.Phase = ImGuiWidgetValueCallbackPhase_ContextMenuQuery;
+    data.ID = item_id;
+    data.UserData = g.WidgetValueCallbackUserData;
+    if (!g.WidgetValueCallback(&data))
+        return false;
+
+    g.WidgetValueContextPopupFrame = g.FrameCount;
+    g.WidgetValueContextPopupItemId = item_id;
+    g.WidgetValueContextPopupLastItemData = g.LastItemData;
+    if (IsMouseReleased(ImGuiMouseButton_Right) && IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByPopup))
+        OpenPopupEx(item_id, ImGuiPopupFlags_MouseButtonRight);
+
+    g.WidgetValueContextPopupOpen = true;
+    const bool open = BeginPopupEx(item_id, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoSavedSettings);
+    if (open)
+    {
+        data.Phase = ImGuiWidgetValueCallbackPhase_ContextMenuDraw;
+        g.WidgetValueCallback(&data);
+    }
+    if (p_open)
+        *p_open = open;
+    if (!open)
+    {
+        g.WidgetValueContextPopupOpen = false;
+        g.LastItemData = g.WidgetValueContextPopupLastItemData;
+    }
+    return true;
+}
+
+void ImGui::EndPopupContextWidget()
+{
+    ImGuiContext& g = *GImGui;
+    if (!g.WidgetValueContextPopupOpen)
+        return;
+    EndPopup();
+    g.WidgetValueContextPopupOpen = false;
+    g.LastItemData = g.WidgetValueContextPopupLastItemData;
+}
+
 void ImGui::End()
 {
     ImGuiContext& g = *GImGui;
     ImGuiWindow* window = g.CurrentWindow;
-
     // Error checking: verify that user hasn't called End() too many times!
     if (g.CurrentWindowStack.Size <= 1 && g.WithinFrameScopeWithImplicitWindow)
     {
@@ -11621,7 +11702,6 @@ bool ImGui::ItemAdd(const ImRect& bb, ImGuiID id, const ImRect* nav_bb_arg, ImGu
 {
     ImGuiContext& g = *GImGui;
     ImGuiWindow* window = g.CurrentWindow;
-
     // Set item data
     // (DisplayRect is left untouched, made valid when ImGuiItemStatusFlags_HasDisplayRect is set)
     g.LastItemData.ID = id;

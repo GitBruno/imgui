@@ -2439,6 +2439,12 @@ struct ImGuiContext
     ImGuiID                 DebugLocateId;                      // Storage for DebugLocateItemOnHover() feature: this is read by ItemAdd() so we keep it in a hot/cached location
     ImGuiNextItemData       NextItemData;                       // Storage for SetNextItem** functions
     ImGuiLastItemData       LastItemData;                       // Storage for last submitted item (setup by ItemAdd)
+    ImGuiWidgetValueCallback WidgetValueCallback;               // Callback for value widgets, installed by SetWidgetValueCallback() (NULL = disabled)
+    void*                   WidgetValueCallbackUserData;        // User data passed to SetWidgetValueCallback()
+    bool                    WidgetValueContextPopupOpen;        // A popup opened by BeginPopupContextWidget() is currently open
+    int                     WidgetValueContextPopupFrame;       // Frame when BeginPopupContextWidget() last claimed WidgetValueContextPopupItemId (so a widget is only claimed once per frame)
+    ImGuiID                 WidgetValueContextPopupItemId;      // Item the widget value context popup was last presented for
+    ImGuiLastItemData       WidgetValueContextPopupLastItemData;// LastItemData saved by BeginPopupContextWidget(), restored by EndPopupContextWidget() so popup items do not replace the widget as last item
     ImGuiNextWindowData     NextWindowData;                     // Storage for SetNextWindow** functions
     bool                    DebugShowGroupRects;
 
