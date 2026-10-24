@@ -44,6 +44,28 @@ Index of this file:
 #ifndef IMGUI_DISABLE
 #include "imgui_internal.h"
 
+// Notify the callback installed by ImGui::SetWidgetValueCallback(), if any (see ImGuiWidgetValueCallbackData in imgui.h).
+// BeforeSubmit is called before the widget reads its value and returns true when the callback modified it. AfterSubmit is called once the widget has been submitted.
+static bool NotifyWidgetValueCallback(ImGuiWidgetValueCallbackPhase phase, const char* label, ImGuiDataType data_type, void* p_data,
+                                      const void* p_min, const void* p_max, ImGuiID id)
+{
+    ImGuiWidgetValueCallback callback = ImGui::GetWidgetValueCallback();
+    if (callback == NULL || p_data == NULL || id == 0)
+        return false;
+    ImGuiWidgetValueCallbackData data;
+    memset(&data, 0, sizeof(data));
+    data.Ctx = ImGui::GetCurrentContext();
+    data.Phase = phase;
+    data.ID = id;
+    data.Label = label;
+    data.DataType = data_type;
+    data.Value = p_data;
+    data.ValueMin = p_min;
+    data.ValueMax = p_max;
+    data.UserData = ImGui::GetWidgetValueCallbackUserData();
+    return callback(&data);
+}
+
 // System includes
 #include <stdint.h>     // intptr_t
 
@@ -1245,6 +1267,8 @@ bool ImGui::Checkbox(const char* label, bool* v)
 
     bool hovered, held;
     bool pressed = ButtonBehavior(total_bb, id, &hovered, &held);
+    const bool callback_changed = NotifyWidgetValueCallback(ImGuiWidgetValueCallbackPhase_BeforeSubmit, label, ImGuiDataType_Bool, v, NULL, NULL, id);
+    checked = *v;
 
     // Range-Selection/Multi-selection support (footer)
     if (is_multi_select)
@@ -1286,7 +1310,10 @@ bool ImGui::Checkbox(const char* label, bool* v)
         RenderText(label_pos, label);
 
     IMGUI_TEST_ENGINE_ITEM_INFO(id, label, g.LastItemData.StatusFlags | ImGuiItemStatusFlags_Checkable | (*v ? ImGuiItemStatusFlags_Checked : 0));
-    return pressed;
+    if (callback_changed)
+        MarkItemEdited(id);
+    NotifyWidgetValueCallback(ImGuiWidgetValueCallbackPhase_AfterSubmit, label, ImGuiDataType_Bool, v, NULL, NULL, id);
+    return pressed || callback_changed;
 }
 
 template<typename T>
@@ -2127,6 +2154,8 @@ static const char* Items_SingleStringGetter(void* data, int idx)
 bool ImGui::Combo(const char* label, int* current_item, const char* (*getter)(void* user_data, int idx), void* user_data, int items_count, int popup_max_height_in_items)
 {
     ImGuiContext& g = *GImGui;
+    ImGuiWindow* window = GetCurrentWindow();
+    const ImGuiID combo_id = window->GetID(label);
 
     // Call the getter to obtain the preview string which is a parameter to BeginCombo()
     const char* preview_value = NULL;
@@ -2138,7 +2167,19 @@ bool ImGui::Combo(const char* label, int* current_item, const char* (*getter)(vo
         SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(FLT_MAX, CalcMaxPopupHeightFromItemCount(popup_max_height_in_items)));
 
     if (!BeginCombo(label, preview_value, ImGuiComboFlags_None))
+    {
+        if (g.LastItemData.ID == combo_id)
+        {
+            const int mn = 0;
+            const int mx = items_count > 0 ? items_count - 1 : 0;
+            const bool callback_changed = NotifyWidgetValueCallback(ImGuiWidgetValueCallbackPhase_BeforeSubmit, label, ImGuiDataType_S32, current_item, &mn, &mx, combo_id);
+            if (callback_changed)
+                MarkItemEdited(combo_id);
+            NotifyWidgetValueCallback(ImGuiWidgetValueCallbackPhase_AfterSubmit, label, ImGuiDataType_S32, current_item, &mn, &mx, combo_id);
+            return callback_changed;
+        }
         return false;
+    }
 
     // Display items
     bool value_changed = false;
@@ -2739,7 +2780,12 @@ bool ImGui::DragScalar(const char* label, ImGuiDataType data_type, void* p_data,
             else if (clamp_range_dir == 0)
                 clamp_enabled = DataTypeIsZero(data_type, p_min) ? ((flags & ImGuiSliderFlags_ClampZeroRange) != 0) : true;
         }
-        return TempInputScalar(frame_bb, id, label, data_type, p_data, format, clamp_enabled ? p_min : NULL, clamp_enabled ? p_max : NULL);
+        const bool callback_changed = NotifyWidgetValueCallback(ImGuiWidgetValueCallbackPhase_BeforeSubmit, label, data_type, p_data, p_min, p_max, id);
+        const bool changed = TempInputScalar(frame_bb, id, label, data_type, p_data, format, clamp_enabled ? p_min : NULL, clamp_enabled ? p_max : NULL) || callback_changed;
+        if (callback_changed)
+            MarkItemEdited(id);
+        NotifyWidgetValueCallback(ImGuiWidgetValueCallbackPhase_AfterSubmit, label, data_type, p_data, p_min, p_max, id);
+        return changed;
     }
 
     // Draw frame
@@ -2748,7 +2794,8 @@ bool ImGui::DragScalar(const char* label, ImGuiDataType data_type, void* p_data,
     RenderFrame(frame_bb.Min, frame_bb.Max, frame_col, true, style.FrameRounding);
 
     // Drag behavior
-    const bool value_changed = DragBehavior(id, data_type, p_data, v_speed, p_min, p_max, format, flags);
+    const bool callback_changed = NotifyWidgetValueCallback(ImGuiWidgetValueCallbackPhase_BeforeSubmit, label, data_type, p_data, p_min, p_max, id);
+    const bool value_changed = DragBehavior(id, data_type, p_data, v_speed, p_min, p_max, format, flags) || callback_changed;
     if (value_changed)
         MarkItemEdited(id);
 
@@ -2763,6 +2810,7 @@ bool ImGui::DragScalar(const char* label, ImGuiDataType data_type, void* p_data,
         RenderText(ImVec2(frame_bb.Max.x + style.ItemInnerSpacing.x, frame_bb.Min.y + style.FramePadding.y), label);
 
     IMGUI_TEST_ENGINE_ITEM_INFO(id, label, g.LastItemData.StatusFlags | (temp_input_allowed ? ImGuiItemStatusFlags_Inputable : 0));
+    NotifyWidgetValueCallback(ImGuiWidgetValueCallbackPhase_AfterSubmit, label, data_type, p_data, p_min, p_max, id);
     return value_changed;
 }
 
@@ -3325,7 +3373,12 @@ bool ImGui::SliderScalar(const char* label, ImGuiDataType data_type, void* p_dat
     {
         // Only clamp CTRL+Click input when ImGuiSliderFlags_ClampOnInput is set (generally via ImGuiSliderFlags_AlwaysClamp)
         const bool clamp_enabled = (flags & ImGuiSliderFlags_ClampOnInput) != 0;
-        return TempInputScalar(frame_bb, id, label, data_type, p_data, format, clamp_enabled ? p_min : NULL, clamp_enabled ? p_max : NULL);
+        const bool callback_changed = NotifyWidgetValueCallback(ImGuiWidgetValueCallbackPhase_BeforeSubmit, label, data_type, p_data, p_min, p_max, id);
+        const bool changed = TempInputScalar(frame_bb, id, label, data_type, p_data, format, clamp_enabled ? p_min : NULL, clamp_enabled ? p_max : NULL) || callback_changed;
+        if (callback_changed)
+            MarkItemEdited(id);
+        NotifyWidgetValueCallback(ImGuiWidgetValueCallbackPhase_AfterSubmit, label, data_type, p_data, p_min, p_max, id);
+        return changed;
     }
 
     // Draw frame
@@ -3335,7 +3388,8 @@ bool ImGui::SliderScalar(const char* label, ImGuiDataType data_type, void* p_dat
 
     // Slider behavior
     ImRect grab_bb;
-    const bool value_changed = SliderBehavior(frame_bb, id, data_type, p_data, p_min, p_max, format, flags, &grab_bb);
+    const bool callback_changed = NotifyWidgetValueCallback(ImGuiWidgetValueCallbackPhase_BeforeSubmit, label, data_type, p_data, p_min, p_max, id);
+    const bool value_changed = SliderBehavior(frame_bb, id, data_type, p_data, p_min, p_max, format, flags, &grab_bb) || callback_changed;
     if (value_changed)
         MarkItemEdited(id);
 
@@ -3354,6 +3408,7 @@ bool ImGui::SliderScalar(const char* label, ImGuiDataType data_type, void* p_dat
         RenderText(ImVec2(frame_bb.Max.x + style.ItemInnerSpacing.x, frame_bb.Min.y + style.FramePadding.y), label);
 
     IMGUI_TEST_ENGINE_ITEM_INFO(id, label, g.LastItemData.StatusFlags | (temp_input_allowed ? ImGuiItemStatusFlags_Inputable : 0));
+    NotifyWidgetValueCallback(ImGuiWidgetValueCallbackPhase_AfterSubmit, label, data_type, p_data, p_min, p_max, id);
     return value_changed;
 }
 
@@ -3485,7 +3540,8 @@ bool ImGui::VSliderScalar(const char* label, const ImVec2& size, ImGuiDataType d
 
     // Slider behavior
     ImRect grab_bb;
-    const bool value_changed = SliderBehavior(frame_bb, id, data_type, p_data, p_min, p_max, format, flags | ImGuiSliderFlags_Vertical, &grab_bb);
+    const bool callback_changed = NotifyWidgetValueCallback(ImGuiWidgetValueCallbackPhase_BeforeSubmit, label, data_type, p_data, p_min, p_max, id);
+    const bool value_changed = SliderBehavior(frame_bb, id, data_type, p_data, p_min, p_max, format, flags | ImGuiSliderFlags_Vertical, &grab_bb) || callback_changed;
     if (value_changed)
         MarkItemEdited(id);
 
@@ -3501,6 +3557,7 @@ bool ImGui::VSliderScalar(const char* label, const ImVec2& size, ImGuiDataType d
     if (label_size.x > 0.0f)
         RenderText(ImVec2(frame_bb.Max.x + style.ItemInnerSpacing.x, frame_bb.Min.y + style.FramePadding.y), label);
 
+    NotifyWidgetValueCallback(ImGuiWidgetValueCallbackPhase_AfterSubmit, label, data_type, p_data, p_min, p_max, id);
     return value_changed;
 }
 

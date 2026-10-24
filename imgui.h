@@ -47,7 +47,7 @@ Index of this file:
 // [SECTION] Helpers: Debug log, Memory allocations macros, ImVector<>
 // [SECTION] ImGuiStyle
 // [SECTION] ImGuiIO
-// [SECTION] Misc data structures (ImGuiInputTextCallbackData, ImGuiSizeCallbackData, ImGuiWindowClass, ImGuiPayload)
+// [SECTION] Misc data structures (ImGuiInputTextCallbackData, ImGuiSizeCallbackData, ImGuiWidgetValueCallbackData, ImGuiWindowClass, ImGuiPayload)
 // [SECTION] Helpers (ImGuiOnceUponAFrame, ImGuiTextFilter, ImGuiTextBuffer, ImGuiStorage, ImGuiListClipper, Math Operators, ImColor)
 // [SECTION] Multi-Select API flags and structures (ImGuiMultiSelectFlags, ImGuiMultiSelectIO, ImGuiSelectionRequest, ImGuiSelectionBasicStorage, ImGuiSelectionExternalStorage)
 // [SECTION] Drawing API (ImDrawCallback, ImDrawCmd, ImDrawIdx, ImDrawVert, ImDrawChannel, ImDrawListSplitter, ImDrawFlags, ImDrawListFlags, ImDrawList, ImDrawData)
@@ -208,6 +208,7 @@ struct ImGuiTableColumnSortSpecs;   // Sorting specification for one column of a
 struct ImGuiTextBuffer;             // Helper to hold and append into a text buffer (~string builder)
 struct ImGuiTextFilter;             // Helper to parse and apply text filters (e.g. "aaaaa[,bbbbb][,ccccc]")
 struct ImGuiViewport;               // A Platform Window (always 1 unless multi-viewport are enabled. One per platform window to output to). In the future may represent Platform Monitor
+struct ImGuiWidgetValueCallbackData;// Shared state of value widgets when using ImGui::SetWidgetValueCallback() (rare/advanced use)
 struct ImGuiWindowClass;            // Window class (rare/advanced uses: provide hints to the platform backend via altered viewport flags and parent/child info)
 
 // Enumerations
@@ -282,6 +283,7 @@ typedef ImS64 ImGuiSelectionUserData;
 // Callback and functions types
 typedef int     (*ImGuiInputTextCallback)(ImGuiInputTextCallbackData* data);    // Callback function for ImGui::InputText()
 typedef void    (*ImGuiSizeCallback)(ImGuiSizeCallbackData* data);              // Callback function for ImGui::SetNextWindowSizeConstraints()
+typedef bool    (*ImGuiWidgetValueCallback)(ImGuiWidgetValueCallbackData* data);// Callback function for ImGui::SetWidgetValueCallback()
 typedef void*   (*ImGuiMemAllocFunc)(size_t sz, void* user_data);               // Function signature for ImGui::SetAllocatorFunctions()
 typedef void    (*ImGuiMemFreeFunc)(void* ptr, void* user_data);                // Function signature for ImGui::SetAllocatorFunctions()
 
@@ -863,6 +865,8 @@ namespace ImGui
     //  - IMPORTANT: Notice that BeginPopupContextXXX takes ImGuiPopupFlags just like OpenPopup() and unlike BeginPopup(). For full consistency, we may add ImGuiWindowFlags to the BeginPopupContextXXX functions in the future.
     //  - IMPORTANT: Notice that we exceptionally default their flags to 1 (== ImGuiPopupFlags_MouseButtonRight) for backward compatibility with older API taking 'int mouse_button = 1' parameter, so if you add other flags remember to re-add the ImGuiPopupFlags_MouseButtonRight.
     IMGUI_API bool          BeginPopupContextItem(const char* str_id = NULL, ImGuiPopupFlags popup_flags = 1);  // open+begin popup when clicked on last item. Use str_id==NULL to associate the popup to previous item. If you want to use that on a non-interactive item such as Text() you need to pass in an explicit ID here. read comments in .cpp!
+    IMGUI_API bool          BeginPopupContextWidget(bool* p_open = NULL); // open+begin popup when right-clicked on the last submitted value widget, if the widget value callback (see SetWidgetValueCallback()) claims it. Return true when the callback claimed the widget: if *p_open is also true the popup is open, the callback has drawn its contents first, you may add more items, and you must call EndPopupContextWidget(). Return false when no callback claimed the widget, so you may fall back to BeginPopupContextItem().
+    IMGUI_API void          EndPopupContextWidget(); // only call EndPopupContextWidget() if BeginPopupContextWidget() returned true and *p_open was true!
     IMGUI_API bool          BeginPopupContextWindow(const char* str_id = NULL, ImGuiPopupFlags popup_flags = 1);// open+begin popup when clicked on current window.
     IMGUI_API bool          BeginPopupContextVoid(const char* str_id = NULL, ImGuiPopupFlags popup_flags = 1);  // open+begin popup when clicked in void (where there are no windows).
 
@@ -1167,6 +1171,13 @@ namespace ImGui
     IMGUI_API void          DestroyPlatformWindows();                               // call DestroyWindow platform functions for all viewports. call from backend Shutdown() if you need to close platform windows before imgui shutdown. otherwise will be called by DestroyContext().
     IMGUI_API ImGuiViewport* FindViewportByID(ImGuiID id);                          // this is a helper for backends.
     IMGUI_API ImGuiViewport* FindViewportByPlatformHandle(void* platform_handle);   // this is a helper for backends. the type platform_handle is decided by the backend (e.g. HWND, MyWindow*, GLFWwindow* etc.)
+
+    // Widget value callback
+    // - Install a single callback for the current context to observe or drive value widgets (Slider, Drag, Checkbox, Combo) from external code, without wrapping every call site.
+    // - See ImGuiWidgetValueCallbackData for the phases and return values. Use BeginPopupContextWidget() to let the callback contribute a context menu for a widget.
+    IMGUI_API void                  SetWidgetValueCallback(ImGuiWidgetValueCallback callback, void* user_data = NULL); // NULL callback uninstalls
+    IMGUI_API ImGuiWidgetValueCallback GetWidgetValueCallback();
+    IMGUI_API void*                 GetWidgetValueCallbackUserData();
 
 } // namespace ImGui
 
@@ -2717,6 +2728,32 @@ struct ImGuiSizeCallbackData
     ImVec2  Pos;            // Read-only.   Window position, for reference.
     ImVec2  CurrentSize;    // Read-only.   Current window size.
     ImVec2  DesiredSize;    // Read-write.  Desired size, based on user's mouse position. Write to this field to restrain resizing.
+};
+
+// Phases of the widget value callback, as installed by ImGui::SetWidgetValueCallback().
+// - A typical use is driving widget values from an external source (automation, remote control, hardware controllers, scripting) or recording them, without wrapping every widget call site.
+// - The callback is limited to widgets backed by a single value: Slider, Drag, Checkbox and Combo. It is not called for multi-component widgets (e.g. SliderFloat2), InputText or color widgets.
+// - With no callback installed, the only cost is one pointer check per value widget.
+enum ImGuiWidgetValueCallbackPhase
+{
+    ImGuiWidgetValueCallbackPhase_BeforeSubmit,     // Called before the widget reads its value. Write through Value and return true if you modified it: the widget will report itself as edited.
+    ImGuiWidgetValueCallbackPhase_AfterSubmit,      // Called after the widget has been submitted and its final value is known. Return value is ignored.
+    ImGuiWidgetValueCallbackPhase_ContextMenuQuery, // Called by BeginPopupContextWidget() for the last submitted widget. Only ID is set. Return true to claim the context menu for this widget.
+    ImGuiWidgetValueCallbackPhase_ContextMenuDraw,  // Called inside the open context menu claimed above. Draw your menu items here. Return value is ignored.
+};
+
+// Shared state of a value widget, passed as an argument to the callback installed by ImGui::SetWidgetValueCallback().
+struct ImGuiWidgetValueCallbackData
+{
+    ImGuiContext*                   Ctx;        // Parent UI context
+    ImGuiWidgetValueCallbackPhase   Phase;      // One ImGuiWidgetValueCallbackPhase_*   // Read-only
+    ImGuiID                         ID;         // Widget ID                             // Read-only
+    const char*                     Label;      // Widget label                          // Read-only    // [BeforeSubmit, AfterSubmit] NULL during context menu phases
+    ImGuiDataType                   DataType;   // Type of Value (ImGuiDataType_Bool for Checkbox, ImGuiDataType_S32 for Combo) // Read-only // [BeforeSubmit, AfterSubmit]
+    void*                           Value;      // Pointer to the widget value           // Read-write   // [BeforeSubmit] Write through this and return true
+    const void*                     ValueMin;   // Pointer to the minimum value, or NULL when unbounded or not applicable (Checkbox) // Read-only // [BeforeSubmit, AfterSubmit]
+    const void*                     ValueMax;   // Pointer to the maximum value, or NULL when unbounded or not applicable (Checkbox) // Read-only // [BeforeSubmit, AfterSubmit]
+    void*                           UserData;   // Read-only.   What user passed to SetWidgetValueCallback().
 };
 
 // [ALPHA] Rarely used / very advanced uses only. Use with SetNextWindowClass() and DockSpace() functions.
